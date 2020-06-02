@@ -24,7 +24,7 @@ void setBotQuota()
 		SetConVarInt(hBotQuota, count, false, false);
 	}
 
-	CloseHandle(hBotQuota);
+	delete hBotQuota;
 
 	return;
 }
@@ -65,14 +65,13 @@ int IsInsideZone (float location[3], float extraSize = 0.0)
 
 public void loadAllClientSettings()
 {
-	for (int i = 1; i < MAXPLAYERS + 1; i++)
+	for (int i = 1; i <= MAXPLAYERS; i++)
 	{
 		if (IsValidClient(i) && !IsFakeClient(i) && !g_bSettingsLoaded[i] && !g_bLoadingSettings[i])
 		{
 			g_iSettingToLoad[i] = 0;
 			LoadClientSetting(i, 0);
 			g_bLoadingSettings[i] = true;
-			break;
 		}
 	}
 
@@ -182,7 +181,7 @@ public void teleportClient(int client, int zonegroup, int zone, bool stopTime)
 
 	// Check clients tele side
 	int teleside = g_iTeleSide[client];
-	
+
 	int zoneID = getZoneID(zonegroup, zone);
 	if (!StrEqual("player", g_mapZones[zoneID].TargetName))
 		DispatchKeyValue(client, "targetname", g_mapZones[zoneID].TargetName);
@@ -654,8 +653,7 @@ public void readMultiServerMapcycle()
 	else
 		SetFailState("[surftimer] %s is empty or does not exist.", MULTI_SERVER_MAPCYCLE);
 
-	if (fileHandle != null)
-		CloseHandle(fileHandle);
+	delete fileHandle;
 
 	return;
 }
@@ -799,35 +797,54 @@ public void parseColorsFromString(char[] ParseString, int size)
 public void checkSpawnPoints()
 {
 	int tEnt, ctEnt;
-	float f_spawnLocation[3], f_spawnAngle[3];
 
 	if (FindEntityByClassname(ctEnt, "info_player_counterterrorist") == -1 || FindEntityByClassname(tEnt, "info_player_terrorist") == -1) // No proper zones were found, try to recreate
 	{
 		// Check if spawn point has been added to the database with !addspawn
 		char szQuery[256];
-		Format(szQuery, 256, "SELECT pos_x, pos_y, pos_z, ang_x, ang_y, ang_z FROM ck_spawnlocations WHERE mapname = '%s' AND zonegroup = 0;", g_szMapName);
-		Handle query = SQL_Query(g_hDb, szQuery);
-		if (query == INVALID_HANDLE)
-		{
-			char szError[255];
-			SQL_GetError(g_hDb, szError, sizeof(szError));
-			PrintToServer("Failed to query map's spawn points (error: %s)", szError);
-		}
-		else
-		{
-			if (SQL_HasResultSet(query) && SQL_FetchRow(query))
-			{
-				f_spawnLocation[0] = SQL_FetchFloat(query, 0);
-				f_spawnLocation[1] = SQL_FetchFloat(query, 1);
-				f_spawnLocation[2] = SQL_FetchFloat(query, 2);
-				f_spawnAngle[0] = SQL_FetchFloat(query, 3);
-				f_spawnAngle[1] = SQL_FetchFloat(query, 4);
-				f_spawnAngle[2] = SQL_FetchFloat(query, 5);
-			}
-			CloseHandle(query);
-		}
+		Format(szQuery, sizeof(szQuery), "SELECT pos_x, pos_y, pos_z, ang_x, ang_y, ang_z FROM ck_spawnlocations WHERE mapname = '%s' AND zonegroup = 0;", g_szMapName);
 
-		if (f_spawnLocation[0] == 0.0 && f_spawnLocation[1] == 0.0 && f_spawnLocation[2] == 0.0) // No spawnpoint added to map with !addspawn, try to find spawns from map
+		DataPack pack = new DataPack();
+		pack.WriteCell(tEnt);
+		pack.WriteCell(ctEnt);
+		g_dDb.Query(sqlSelectSpawnPoints, szQuery, pack);
+	}
+}
+
+public void sqlSelectSpawnPoints(Database db, DBResultSet results, const char[] error, DataPack pack)
+{
+	if (db == null || strlen(error))
+	{
+		LogError("[Surftimer] SQL Error (sqlSelectSpawnPoints): %s", error);
+		delete pack;
+		return;
+	}
+
+	pack.Reset();
+
+	int tEnt = pack.ReadCell();
+	int ctEnt = pack.ReadCell();
+
+	delete pack;
+
+	float fSpawnLocation[3], fSpawnAngle[3];
+
+	if (results.HasResults)
+	{
+		if (results.FetchRow())
+		{
+			fSpawnLocation[0] = results.FetchFloat(0);
+			fSpawnLocation[1] = results.FetchFloat(1);
+			fSpawnLocation[2] = results.FetchFloat(2);
+			fSpawnAngle[0] = results.FetchFloat(3);
+			fSpawnAngle[1] = results.FetchFloat(4);
+			fSpawnAngle[2] = results.FetchFloat(5);
+		}
+	}
+
+	if (ctEnt == -1 || tEnt == -1)
+	{
+		if (fSpawnLocation[0] == 0.0 && fSpawnLocation[1] == 0.0 && fSpawnLocation[2] == 0.0) // No spawnpoint added to map with !addspawn, try to find spawns from map
 		{
 			PrintToServer("surftimer | No valid spawns found in the map.");
 			int zoneEnt = -1;
@@ -835,20 +852,20 @@ public void checkSpawnPoints()
 
 			if (zoneEnt != -1)
 			{
-				GetEntPropVector(zoneEnt, Prop_Data, "m_angRotation", f_spawnAngle);
-				GetEntPropVector(zoneEnt, Prop_Send, "m_vecOrigin", f_spawnLocation);
+				GetEntPropVector(zoneEnt, Prop_Data, "m_angRotation", fSpawnAngle);
+				GetEntPropVector(zoneEnt, Prop_Send, "m_vecOrigin", fSpawnLocation);
 
-				PrintToServer("surftimer | Found info_player_teamspawn in location %f, %f, %f", f_spawnLocation[0], f_spawnLocation[1], f_spawnLocation[2]);
+				PrintToServer("surftimer | Found info_player_teamspawn in location %f, %f, %f", fSpawnLocation[0], fSpawnLocation[1], fSpawnLocation[2]);
 			}
 			else
 			{
 				zoneEnt = FindEntityByClassname(zoneEnt, "info_player_start"); // Random spawn
 				if (zoneEnt != -1)
 				{
-					GetEntPropVector(zoneEnt, Prop_Data, "m_angRotation", f_spawnAngle);
-					GetEntPropVector(zoneEnt, Prop_Send, "m_vecOrigin", f_spawnLocation);
+					GetEntPropVector(zoneEnt, Prop_Data, "m_angRotation", fSpawnAngle);
+					GetEntPropVector(zoneEnt, Prop_Send, "m_vecOrigin", fSpawnLocation);
 
-					PrintToServer("surftimer | Found info_player_start in location %f, %f, %f", f_spawnLocation[0], f_spawnLocation[1], f_spawnLocation[2]);
+					PrintToServer("surftimer | Found info_player_start in location %f, %f, %f", fSpawnLocation[0], fSpawnLocation[1], fSpawnLocation[2]);
 				}
 				else
 				{
@@ -868,8 +885,8 @@ public void checkSpawnPoints()
 			ActivateEntity(pointCT);
 			if (IsValidEntity(pointT) && IsValidEntity(pointCT) && DispatchSpawn(pointT) && DispatchSpawn(pointCT))
 			{
-				TeleportEntity(pointT, f_spawnLocation, f_spawnAngle, NULL_VECTOR);
-				TeleportEntity(pointCT, f_spawnLocation, f_spawnAngle, NULL_VECTOR);
+				TeleportEntity(pointT, fSpawnLocation, fSpawnAngle, NULL_VECTOR);
+				TeleportEntity(pointCT, fSpawnLocation, fSpawnAngle, NULL_VECTOR);
 				count++;
 			}
 		}
@@ -895,8 +912,8 @@ public void checkSpawnPoints()
 		{
 			if (tEnt == 0)
 			{
-				GetEntPropVector(ent, Prop_Data, "m_angRotation", f_spawnAngle);
-				GetEntPropVector(ent, Prop_Send, "m_vecOrigin", f_spawnLocation);
+				GetEntPropVector(ent, Prop_Data, "m_angRotation", fSpawnAngle);
+				GetEntPropVector(ent, Prop_Send, "m_vecOrigin", fSpawnLocation);
 			}
 			tEnt++;
 		}
@@ -904,8 +921,8 @@ public void checkSpawnPoints()
 		{
 			if (ctEnt == 0 && tEnt == 0)
 			{
-				GetEntPropVector(ent, Prop_Data, "m_angRotation", f_spawnAngle);
-				GetEntPropVector(ent, Prop_Send, "m_vecOrigin", f_spawnLocation);
+				GetEntPropVector(ent, Prop_Data, "m_angRotation", fSpawnAngle);
+				GetEntPropVector(ent, Prop_Send, "m_vecOrigin", fSpawnLocation);
 			}
 			ctEnt++;
 		}
@@ -920,7 +937,7 @@ public void checkSpawnPoints()
 					if (IsValidEntity(spawnpoint) && DispatchSpawn(spawnpoint))
 					{
 						ActivateEntity(spawnpoint);
-						TeleportEntity(spawnpoint, f_spawnLocation, f_spawnAngle, NULL_VECTOR);
+						TeleportEntity(spawnpoint, fSpawnLocation, fSpawnAngle, NULL_VECTOR);
 						tEnt++;
 					}
 				}
@@ -934,7 +951,7 @@ public void checkSpawnPoints()
 					if (IsValidEntity(spawnpoint) && DispatchSpawn(spawnpoint))
 					{
 						ActivateEntity(spawnpoint);
-						TeleportEntity(spawnpoint, f_spawnLocation, f_spawnAngle, NULL_VECTOR);
+						TeleportEntity(spawnpoint, fSpawnLocation, fSpawnAngle, NULL_VECTOR);
 						ctEnt++;
 					}
 				}
@@ -1172,7 +1189,7 @@ public void LimitSpeedNew(int client)
 {
 	if (!IsValidClient(client) || !IsPlayerAlive(client) || IsFakeClient(client))
 		return;
-	
+
 	if (g_mapZonesCount <= 0 || g_bPracticeMode[client] || g_mapZonesTypeCount[g_iClientInZone[client][2]][2] == 0 || g_iClientInZone[client][3] < 0 || g_iClientInZone[client][0] == 2 || g_iClientInZone[client][0] == 4 || g_iClientInZone[client][0] >= 6 || GetConVarInt(g_hLimitSpeedType) == 0 || g_iCurrentStyle[client] == 7)
 		return;
 
@@ -1201,7 +1218,7 @@ public void LimitSpeedNew(int client)
 
 	float fVel[3];
 	GetEntPropVector(client, Prop_Data, "m_vecVelocity", fVel);
-	
+
 	// Determine how much each vector must be scaled for the magnitude to equal the limit
 	// Derived from Pythagorean theorem, where the hypotenuse represents the magnitude of velocity,
 	// and the two legs represent the x and y velocity components.
@@ -1466,7 +1483,7 @@ int GetAllSpeedTypes(int client)
 
 	if (!IsValidClient(client))
 		return speed;
-		
+
 	float fVelocity[3];
 	GetEntPropVector(client, Prop_Data, "m_vecVelocity", fVelocity);
 
@@ -1636,10 +1653,10 @@ stock int TraceClientViewEntity(int client)
 	if (TR_DidHit(tr))
 	{
 		pEntity = TR_GetEntityIndex(tr);
-		CloseHandle(tr);
+		delete tr;
 		return pEntity;
 	}
-	CloseHandle(tr);
+	delete tr;
 	return -1;
 }
 
@@ -1902,11 +1919,11 @@ stock void MapFinishedMsgs(int client, int rankThisRun = 0)
 		if (g_bMapSRVRecord[client])
 		{
 			if (GetConVarBool(g_hRecordAnnounce))
-				db_insertAnnouncement(szName, g_szMapName, 0, g_szFinalTime[client], 0);
+				db_insertAnnouncement(client, szName, g_szMapName, 0, g_szFinalTime[client], 0);
 			char buffer[1024];
 			GetConVarString(g_hRecordAnnounceDiscord, buffer, 1024);
 			if (!StrEqual(buffer, ""))
-				sendDiscordAnnouncement(szName, g_szMapName, g_szFinalTime[client]);
+				sendDiscordAnnouncement(szName, g_szMapName, g_szFinalTime[client], g_szTimeDifference[client]);
 		}
 
 		if (g_bTop10Time[client])
@@ -2042,12 +2059,12 @@ stock void PrintChatBonus (int client, int zGroup, int rank = 0)
 	if (g_bBonusSRVRecord[client])
 	{
 		if (GetConVarBool(g_hRecordAnnounce))
-			db_insertAnnouncement(szName, g_szMapName, 1, g_szFinalTime[client], zGroup);
+			db_insertAnnouncement(client, szName, g_szMapName, 1, g_szFinalTime[client], zGroup);
 		char buffer[1024], buffer1[1024];
 		GetConVarString(g_hRecordAnnounceDiscord, buffer, 1024);
 		GetConVarString(g_hRecordAnnounceDiscordBonus, buffer1, 1024);
 		if (!StrEqual(buffer, "") && !StrEqual(buffer1, ""))
-			sendDiscordAnnouncementBonus(szName, g_szMapName, g_szFinalTime[client], zGroup);
+			sendDiscordAnnouncementBonus(szName, g_szMapName, g_szFinalTime[client], zGroup, g_szBonusTimeDifference[client]);
 	}
 
 	/* Start function call */
@@ -2448,8 +2465,8 @@ public void SetSkillGroups()
 				PushArrayArray(g_hSkillGroups, RankValue, sizeof(RankValue));
 			} while (KvGotoNextKey(hKeyValues));
 		}
-		if (hKeyValues != null)
-			CloseHandle(hKeyValues);
+
+		delete hKeyValues;
 	}
 	else
 		SetFailState("[surftimer] %s not found.", SKILLGROUP_PATH);
@@ -2763,7 +2780,7 @@ public void SpecList(int client)
 		Handle panel = CreatePanel();
 		DrawPanelText(panel, g_szPlayerPanelText[client]);
 		SendPanelToClient(panel, client, PanelHandler, 1);
-		CloseHandle(panel);
+		delete panel;
 	}
 }
 
@@ -3193,11 +3210,9 @@ public void SetInfoBotName(int ent)
 	float ftime = float(iInfoBotTimeleft);
 	char szTime[32];
 	FormatTimeFloat(g_InfoBot, ftime, 4, szTime, sizeof(szTime));
-	Handle hTmp;
-	hTmp = FindConVar("mp_timelimit");
+	Handle hTmp = FindConVar("mp_timelimit");
 	int iTimeLimit = GetConVarInt(hTmp);
-	if (hTmp != null)
-		CloseHandle(hTmp);
+	delete hTmp;
 	if (GetConVarBool(g_hMapEnd) && iTimeLimit > 0)
 		Format(szBuffer, sizeof(szBuffer), "%s (in %s)", sNextMap, szTime);
 	else
@@ -3797,7 +3812,7 @@ public void SideHudAlive(int client)
 		DrawPanelText(panel, szPanel);
 
 		SendPanelToClient(panel, client, PanelHandler, 1);
-		CloseHandle(panel);
+		delete panel;
 	}
 }
 
@@ -3840,7 +3855,7 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 	}
 
 	g_fCheckpointTimesNew[zonegroup][client][zone] = time;
-	
+
 	for (int i = 0; i < 3; i++)
 	{
 		g_iCheckpointVelsEndNew[zonegroup][client][zone][i] = speed[i];
@@ -3968,24 +3983,24 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 				speedType = 0;
 			else
 				speedType = 1;
-				
+
 			compare = g_iCheckpointVelsStartServerRecord[zonegroup][zone - 1][speedType];
 			compare2 = g_iCheckpointVelsStartNew[zonegroup][client][zone - 1][speedType];
 		}
-		
+
 		if (compare == 0)
 			startSpeedDiffWR = compare2;
 		else if (compare > compare2)
 			startSpeedDiffWR = (compare - compare2);
 		else
 			startSpeedDiffWR = (compare2 - compare);
-		
+
 		if (compare2 > compare)
 			Format(szStartWR, sizeof(szStartWR), "+%d", startSpeedDiffWR);
 		else
 			Format(szStartWR, sizeof(szStartWR), "-%d", startSpeedDiffWR);
-			
-	
+
+
 		// WR End Speed
 		int f_srDiffVel;
 		if (g_iCheckpointVelsEndServerRecord[zonegroup][zone][speedType] == 0)
@@ -4008,7 +4023,7 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 			Format(sz_srDiffVel, 128, "%s", sz_srDiffVel_colorless);
 			Format(szEndWR, sizeof(szEndWR), sz_srDiffVel);
 		}
-		
+
 		// PB Start Speed
 		if (zone == 0)
 		{
@@ -4020,21 +4035,21 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 			compare = g_iCheckpointVelsStartRecord[zonegroup][client][zone - 1][speedType];
 			compare2 = g_iCheckpointVelsStartNew[zonegroup][client][zone - 1][speedType];
 		}
-		
+
 		if (compare == 0)
 			startSpeedDiffPB = compare2;
 		else if (compare > compare2)
 			startSpeedDiffPB = (compare - compare2);
 		else
 			startSpeedDiffPB = (compare2 - compare);
-		
+
 		if (compare2 > compare)
 			Format(szStartPB, sizeof(szStartPB), "+%d", startSpeedDiffPB);
 		else
 			Format(szStartPB, sizeof(szStartPB), "-%d", startSpeedDiffPB);
 
 		// PB End Speed
-		
+
 		savedSpeed = g_iCheckpointVelsEndRecord[zonegroup][client][zone][speedType];
 		currentSpeed = speed[speedType];
 
@@ -4060,7 +4075,7 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 			Format(szEnd, sizeof(szEnd), szDiffVel);
 			// Format(szDiff, 128, "%s%s", szDiff, szDiffVel);
 		}
-		
+
 		if (g_fCheckpointTimesRecord[zonegroup][client][zone] <= 0.0)
 			Format(szDiff, 128, "");
 
@@ -4129,20 +4144,20 @@ public void Checkpoint(int client, int zone, int zonegroup, float time, int spee
 				compare = g_iCheckpointVelsStartServerRecord[zonegroup][zone - 1][speedType];
 				compare2 = g_iCheckpointVelsStartNew[zonegroup][client][zone - 1][speedType];
 			}
-			
+
 			if (compare == 0)
 				startSpeedDiffWR = compare2;
 			else if (compare > compare2)
 				startSpeedDiffWR = (compare - compare2);
 			else
 				startSpeedDiffWR = (compare2 - compare);
-			
+
 			if (compare2 > compare)
 				Format(szStartWR, sizeof(szStartWR), "+%d", startSpeedDiffWR);
 			else
 				Format(szStartWR, sizeof(szStartWR), "-%d", startSpeedDiffWR);
-				
-		
+
+
 			// WR End Speed
 			int f_srDiffVel;
 			if (g_iCheckpointVelsEndServerRecord[zonegroup][zone][speedType] == 0)
@@ -4585,57 +4600,201 @@ public void totalTimeForHumans(int unix, char[] buffer, int size)
 	}
 }
 
-public void sendDiscordAnnouncement(char szName[128], char szMapName[128], char szTime[32])
+public void sendDiscordAnnouncement(char szName[128], char szMapName[128], char szTime[32], char szTimeDifference[32])
 {
-	char webhook[1024], webhookName[1024];
-	GetConVarString(g_hRecordAnnounceDiscord, webhook, 1024);
-	GetConVarString(g_dcMapRecordName, webhookName, 1024);
-	if (StrEqual(webhook, ""))
-		return;
+	//Test which style to use
+	if (!GetConVarBool(g_dcKSFStyle))
+	{
+		//Get the WebHook
+		char webhook[1024], webhookName[1024];
+		GetConVarString(g_hRecordAnnounceDiscord, webhook, 1024);
+		GetConVarString(g_dcMapRecordName, webhookName, 1024);
+		if (StrEqual(webhook, ""))
+			return;
 
-	// Send Discord Announcement
-	DiscordWebHook hook = new DiscordWebHook(webhook);
-	hook.SlackMode = true;
+		DiscordWebHook hook = new DiscordWebHook(webhook);
+		char szMention[128];
+		hook.SlackMode = true;
+		GetConVarString(g_dcMention, szMention, 128);
+		if (!StrEqual(szMention, "")) //Checks if mention is disabled
+		{
+			hook.SetContent(szMention);
+		}
+		hook.SetUsername(webhookName);
 
-	hook.SetUsername(webhookName);
+		//Format the message
+		char szTitle[256];
+		GetConVarString(g_dcTitle, szTitle, 256);
+		ReplaceString(szTitle, sizeof(szTitle), "{Server_Name}", g_sServerName);
+		//Create the embed message
+		MessageEmbed Embed = new MessageEmbed();
 
-	// Format The Message
-	char szMessage[256];
+		char szColor[128];
+		GetConVarString(g_dcColor, szColor, 128);
+		char szTimeDiscord[128];
+		Format(szTimeDiscord, sizeof(szTimeDiscord), "%s (%s)", szTime, szTimeDifference);
+		Embed.SetColor(szColor);
+		Embed.SetTitle(szTitle);
+		Embed.AddField("Player", szName, true);
+		Embed.AddField("Time", szTimeDiscord, true);
+		Embed.AddField("Map", szMapName, true);
 
-	Format(szMessage, sizeof(szMessage), "```md\n# New Server Record on %s #\n\n[%s] beat the server record on < %s > with a time of < %s > ]:```", g_sServerName, szName, szMapName, szTime);
+		//Send the main image of the map
+		char szUrlMain[1024];
+		GetConVarString(g_dcUrl_main, szUrlMain, 1024);
+		if (!StrEqual(szUrlMain, ""))
+		{
+			StrCat(szUrlMain, sizeof(szUrlMain), szMapName);
+			StrCat(szUrlMain, sizeof(szUrlMain), ".jpg");
+			Embed.SetImage(szUrlMain);
+		}
 
-	hook.SetContent(szMessage);
-	hook.Send();
-	delete hook;
+
+		//Send the thumb image of the map
+		char szUrlThumb[1024];
+		GetConVarString(g_dcUrl_thumb, szUrlThumb, 1024);
+		if (!StrEqual(szUrlThumb, ""))
+		{
+			StrCat(szUrlThumb, sizeof(szUrlThumb), szMapName);
+			StrCat(szUrlThumb, sizeof(szUrlThumb), ".jpg");
+			Embed.SetThumb(szUrlThumb);
+		}
+
+
+		//Send the message
+		hook.Embed(Embed);
+
+		hook.Send();
+		delete hook;
+	}
+	else
+	{
+		char webhook[1024], webhookName[1024];
+		GetConVarString(g_hRecordAnnounceDiscord, webhook, 1024);
+		GetConVarString(g_dcMapRecordName, webhookName, 1024);
+		if (StrEqual(webhook, ""))
+			return;
+
+		// Send Discord Announcement
+		DiscordWebHook hook = new DiscordWebHook(webhook);
+		hook.SlackMode = true;
+
+		hook.SetUsername(webhookName);
+
+		// Format The Message
+		char szMessage[256];
+
+		Format(szMessage, sizeof(szMessage), "```md\n# New Server Record on %s #\n\n[%s] beat the server record on < %s > with a time of < %s (%s) > ]:```", g_sServerName, szName, szMapName, szTime, szTimeDifference);
+
+		hook.SetContent(szMessage);
+		hook.Send();
+		delete hook;
+	}
 }
 
-public void sendDiscordAnnouncementBonus(char szName[128], char szMapName[128], char szTime[32], int zGroup)
+public void sendDiscordAnnouncementBonus(char szName[128], char szMapName[128], char szTime[32], int zGroup, char szTimeDifference[32])
 {
-	char webhook[1024], webhookN[1024], webhookName[1024];
-	GetConVarString(g_hRecordAnnounceDiscord, webhookN, 1024);
-	GetConVarString(g_hRecordAnnounceDiscordBonus, webhook, 1024);
-	GetConVarString(g_dcBonusRecordName, webhookName, 1024);
-	if (StrEqual(webhook, ""))
-		if (StrEqual(webhookN, ""))
-			return;
-		else
-			webhook = webhookN;
+	//Test which style to use
+	if (!GetConVarBool(g_dcKSFStyle))
+	{
+		//Get the WebHook
+		char webhook[1024], webhookN[1024], webhookName[1024];
+		GetConVarString(g_hRecordAnnounceDiscord, webhookN, 1024);
+		GetConVarString(g_hRecordAnnounceDiscordBonus, webhook, 1024);
+		GetConVarString(g_dcBonusRecordName, webhookName, 1024);
+		if (StrEqual(webhook, ""))
+			if (StrEqual(webhookN, ""))
+				return;
+			else
+				webhook = webhookN;
+
+		DiscordWebHook hook = new DiscordWebHook(webhook);
+		hook.SlackMode = true;
+		char szMention[128];
+		GetConVarString(g_dcMention, szMention, 128);
+		if (!StrEqual(szMention, "")) //Checks if mention is disabled
+		{
+			hook.SetContent(szMention);
+		}
+		hook.SetUsername(webhookName);
+
+		//Format the message
+		char szTitle[256];
+		GetConVarString(g_dcTitleBonus, szTitle, 256);
+		ReplaceString(szTitle, sizeof(szTitle), "{Server_Name}", g_sServerName);
+
+		//Create the embed message
+		MessageEmbed Embed = new MessageEmbed();
+
+		char szColor[128];
+		GetConVarString(g_dcColor, szColor, 128);
+
+		char szTimeDiscord[128];
+		Format(szTimeDiscord, sizeof(szTimeDiscord), "%s (%s)", szTime, szTimeDifference);
+
+		Embed.SetColor(szColor);
+		Embed.SetTitle(szTitle);
+		Embed.AddField("Player", szName, true);
+		Embed.AddField("Time", szTimeDiscord, true);
+		Embed.AddField("Map", szMapName, true);
+		char szGroup[8];
+		IntToString(zGroup, szGroup, sizeof(szGroup));
+		Embed.AddField("Bonus", szGroup, true);
+
+		//Send the main image of the map
+		char szUrlMain[1024];
+		GetConVarString(g_dcUrl_main, szUrlMain, 1024);
+		if (!StrEqual(szUrlMain, ""))
+		{
+			StrCat(szUrlMain, sizeof(szUrlMain), szMapName);
+			StrCat(szUrlMain, sizeof(szUrlMain), ".jpg");
+			Embed.SetImage(szUrlMain);
+		}
+
+		//Send the thumb image of the map
+		char szUrlThumb[1024];
+		GetConVarString(g_dcUrl_thumb, szUrlThumb, 1024);
+		if (!StrEqual(szUrlThumb, ""))
+		{
+			StrCat(szUrlThumb, sizeof(szUrlThumb), szMapName);
+			StrCat(szUrlThumb, sizeof(szUrlThumb), ".jpg");
+			Embed.SetThumb(szUrlThumb);
+		}
+
+		//Send the message
+		hook.Embed(Embed);
+
+		hook.Send();
+		delete hook;
+	}
+	else
+	{
+		char webhook[1024], webhookN[1024], webhookName[1024];
+		GetConVarString(g_hRecordAnnounceDiscord, webhookN, 1024);
+		GetConVarString(g_hRecordAnnounceDiscordBonus, webhook, 1024);
+		GetConVarString(g_dcBonusRecordName, webhookName, 1024);
+		if (StrEqual(webhook, ""))
+			if (StrEqual(webhookN, ""))
+				return;
+			else
+				webhook = webhookN;
 
 
- 	// Send Discord Announcement
-	DiscordWebHook hook = new DiscordWebHook(webhook);
-	hook.SlackMode = true;
+	 	// Send Discord Announcement
+		DiscordWebHook hook = new DiscordWebHook(webhook);
+		hook.SlackMode = true;
 
-	hook.SetUsername(webhookName);
+		hook.SetUsername(webhookName);
 
-	// Format The Message
-	char szMessage[256];
+		// Format The Message
+		char szMessage[256];
 
-	Format(szMessage, sizeof(szMessage), "```md\n# New Bonus Server Record on %s #\n\n[%s] beat the bonus %i server record on < %s > with a time of < %s > ]:```", g_sServerName, szName, zGroup, szMapName, szTime);
+		Format(szMessage, sizeof(szMessage), "```md\n# New Bonus Server Record on %s #\n\n[%s] beat the bonus %i server record on < %s > with a time of < %s (%s) > ]:```", g_sServerName, szName, zGroup, szMapName, szTime, szTimeDifference);
 
-	hook.SetContent(szMessage);
-	hook.Send();
-	delete hook;
+		hook.SetContent(szMessage);
+		hook.Send();
+		delete hook;
+	}
 }
 
 bool IsPlayerVip(int client, bool admin = true, bool reply = false)
@@ -4658,7 +4817,6 @@ bool IsPlayerVip(int client, bool admin = true, bool reply = false)
 
 	return true;
 }
-
 
 public float GetStrafeSync(int client, bool sync)
 {
@@ -4834,7 +4992,7 @@ public void ReadDefaultTitlesWhitelist()
 			if (StrContains(line, "//", true) == -1)
 				PushArrayString(g_DefaultTitlesWhitelist, line);
 		}
-		CloseHandle(whitelist);
+		delete whitelist;
 	}
 	else
 		LogError("[SurfTimer] %s not found", DEFAULT_TITLES_WHITELIST_PATH);
@@ -4967,7 +5125,7 @@ void PrintCSGOHUDText(int client, const char[] format, any ...)
 
 	for(int i = strlen(buff); i < sizeof(buff) - 1; i++)
 		buff[i] = '\n';
-	
+
 	buff[sizeof(buff) - 1] = '\0';
 
 	Protobuf pb = view_as<Protobuf>(StartMessageOne("TextMsg", client, USERMSG_RELIABLE | USERMSG_BLOCKHOOKS));
